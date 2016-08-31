@@ -1,14 +1,15 @@
 ##README
 This here Arduino code is to be used in this here kind of application:   
 http://www.instructables.com/id/Arduino-UNO-LCD-16x02-and-Rotary-Encoder-Controlle/   
-1. Points to note:
+#### Points to note:
   * If you do not intend to use an LCD screen and a 5-pin rotary encoder with a push button
 you better find some other code
   * The relay modules I currently use for the installation "click" when they get the signal 
 LOW. This affects the light, air humidifier and irrigation.
   * The soil humidity sensor that the code currently supports is the simplest of its kind, a 
 2-pin one.   
-1. Some things I would work on if I had more time to spend on this:
+
+#### Some things I would work on if I had more time to spend on this:
   * A light dependant resistor to keep checking the lights and warn the user if they don't 
 work as usual. With this should come a calibrating function similar to the Calibrate RHs
 sensor.

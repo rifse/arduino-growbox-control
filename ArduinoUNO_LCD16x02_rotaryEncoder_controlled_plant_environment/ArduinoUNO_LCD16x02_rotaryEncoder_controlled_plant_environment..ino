@@ -24,6 +24,8 @@ struct Limens // got this from Seeed studio code
     unsigned char _SoilHum_Hi         = 255;
     unsigned char WaterVolume         = 2;
     unsigned char LightDaily          = 10;
+    unsigned char VentTimesDaily      = 2;
+    unsigned char VentTime            = 60;
 }; // the above Limens values are replaced with the ones stored in the EEPROM in the setup, therefore immediately after power on of Arduino
 typedef struct Limens WorkingLimens;
 WorkingLimens SystemLimens;
@@ -44,6 +46,8 @@ char m6r1[]="calibrate RHs";
 char m6r2[]="sensor?";
 char m6r3[]="dry";
 char m6r4[]="wet";
+char m7r1[]="vent[x/day]";
+char m7r2[]="ventT[s]";
 // above are constant strings used on the LCD 
 const byte LightRelayPin = 6;            // the relay controlling the lights, inversed (LOW triggers it, HIGH is NormallyConnected)
 const byte HumidifierRelayPin = 7;       // the relay controlling the humidifier, inversed (if yours are not you have to check all the code)
@@ -66,9 +70,14 @@ float DHTHumidity    = 0;
 float DHTTemperature = 0;
 unsigned int DHTHumidity_ = 0;
 unsigned int DHTTemperature_ = 0;
-byte _fanPower = 0;
-byte fanPower = 25;
-byte airHumidify = 0;
+unsigned long airHumidifyTimer = 0;
+//byte airHumidify = 1;
+/*byte _fanPower = 0;
+byte fanPower = 25;*/
+unsigned long _ventTimer = 0;
+unsigned long _ventOnTime = 0;
+unsigned long _ventOffTime = 0;
+byte ventPowerFlag = 0;
 // some irrigation stuff
 int soilHum;
 int _soilHum;
@@ -95,7 +104,7 @@ unsigned long buttonPressTime;  // when the switch last changed state
 boolean buttonPressed = 0; // a flag variable
 // Menu and submenu/setting declarations
 byte Mode = 0;   // This is which menu mode we are in at any given time (top level or one of the submenus)
-const byte modeMax = 6; // This is the number of submenus/settings you want
+const byte modeMax = 7; // This is the number of submenus/settings you want
 /* Note: you may wish to change settingN etc to int, float or boolean to suit your application. 
  Remember to change "void setADisplayModeLCDn(byte name,*BYTE* setting)" to match and probably add some 
  "modeMax"-type overflow code in the "if(Mode == N && buttonPressed)" section*/
@@ -128,6 +137,8 @@ void setup() {
       EEPROM.write(++EEPROMAddress,SystemLimens._SoilHum_Hi);      
       EEPROM.write(++EEPROMAddress,SystemLimens.WaterVolume);   
       EEPROM.write(++EEPROMAddress,SystemLimens.LightDaily);
+      EEPROM.write(++EEPROMAddress,SystemLimens.VentTimesDaily);
+      EEPROM.write(++EEPROMAddress,SystemLimens.VentTime);
   } 
   else {
       EEPROMAddress++;
@@ -140,6 +151,8 @@ void setup() {
       SystemLimens._SoilHum_Hi        = EEPROM.read(EEPROMAddress++);
       SystemLimens.WaterVolume        = EEPROM.read(EEPROMAddress++);        
       SystemLimens.LightDaily         = EEPROM.read(EEPROMAddress++);
+      SystemLimens.VentTimesDaily     = EEPROM.read(EEPROMAddress++);
+      SystemLimens.VentTime           = EEPROM.read(EEPROMAddress++);
   }
   _lightDaily = SystemLimens.LightDaily * 3600000;
   pinMode(LightRelayPin, OUTPUT); // Relay controlling : Lights
@@ -150,6 +163,8 @@ void setup() {
 
 void loop() {
   CheckChangeWaterPump(); // is run constantly and completely controls the output for irrigation
+  CheckChangeVents();
+  CheckChangeAirHumidifier();
   rotaryMenu();           // is run constantly and controls most of the LCD / rotary encored menu       
   if ((millis() - StartTime > DataUpdateInterval - RHsPowerTime) && (millis() - StartTime < DataUpdateInterval)) {
     digitalWrite(RHsPower,HIGH);
@@ -165,12 +180,6 @@ void loop() {
      soilHum = map(_soilHum,SystemLimens._SoilHum_Low,SystemLimens._SoilHum_Hi,0,100);
      digitalWrite(RHsPower,LOW);
      CheckChangeLights();
-     CheckChangeVents();
-     CheckTurnOnAirHumidifier();
-  }
-  if (((millis()- StartTime) > 5000) && airHumidify) {
-    airHumidify = 0;
-    digitalWrite(HumidifierRelayPin,HIGH);
   }
 }
 
@@ -211,6 +220,9 @@ void rotaryMenu() {
         DisplayModeLCD(m6r1,m6r2,-27,-27);
         RHsPowerFlag = 1;
         digitalWrite(RHsPower,HIGH);
+      }
+      else if (encoderPos == 7) {
+        DisplayModeLCD(m7r1,m7r2,SystemLimens.VentTimesDaily,SystemLimens.VentTime);
       }
     }
     if (Mode == 2 && !modeVal2) {
@@ -261,6 +273,18 @@ void rotaryMenu() {
       }
       ChangeValue(encoderPos,1);
     }
+    else if (Mode == 7 && !modeVal2) {
+      if((encoderPos == 255) || (encoderPos < 1)) {
+        encoderPos = oldEncPos;
+      }
+      ChangeValue(encoderPos,0);
+    }
+    else if (Mode == 7 && modeVal2) {
+      if((encoderPos == 255) || (encoderPos < 1)) {
+        encoderPos = oldEncPos;
+      }
+      ChangeValue(encoderPos,1);
+    }
     oldEncPos = encoderPos;
   }
   byte buttonState = digitalRead (buttonPin); 
@@ -306,6 +330,10 @@ void rotaryMenu() {
       else if (Mode == 6) {
         lcd.clear();
         lcd.print(m6r3);
+      }
+      else if (Mode == 7) {
+        encoderPos = SystemLimens.VentTimesDaily;
+        SetValueCursor();
       }
     }
   }
@@ -401,6 +429,23 @@ void rotaryMenu() {
     EEPROM.update(7,SystemLimens._SoilHum_Hi);
     Mode = 0;
     encoderPos = 0;
+  }
+  if (Mode == 7 && buttonPressed && !modeVal2){
+    buttonPressed = 0;
+    modeVal2 = 1; 
+    SystemLimens.VentTimesDaily = encoderPos;
+    EEPROM.update(10,SystemLimens.VentTimesDaily);
+    SetValueCursor();
+    encoderPos = SystemLimens.VentTime;  
+  }
+  else if (Mode == 7 && buttonPressed && modeVal2) {
+    buttonPressed = 0;
+    modeVal2 = 0;
+    SystemLimens.VentTime = encoderPos;
+    EEPROM.update(11,SystemLimens.VentTime);
+    SetValueCursor(); 
+    Mode = 0;
+    encoderPos = 7;
   }
 } 
 
@@ -517,7 +562,30 @@ void CheckChangeLights()
 
 void CheckChangeVents()
 {   
-    _fanPower= constrain(DHTTemperature_, SystemLimens.DHTTemperature_Low, SystemLimens.DHTTemperature_Hi);
+    _ventOnTime = SystemLimens.VentTime * 1000;
+    _ventOffTime = OneHour*24/SystemLimens.VentTimesDaily - _ventOnTime;
+    if (!ventPowerFlag) {
+      if (millis() > _ventTimer + _ventOffTime) {
+        ventPowerFlag = 1;
+        _ventTimer = millis();
+        analogWrite(VentTransistorPin, 255);
+      }
+      else if ((DHTTemperature_ > SystemLimens.DHTTemperature_Hi) || (DHTHumidity_ > SystemLimens.DHTHumidity_Hi)) {
+        analogWrite(VentTransistorPin, 255);
+      }
+      else {
+        analogWrite(VentTransistorPin, 0);
+      }
+    }
+    else {
+      if(millis() > _ventTimer + _ventOnTime) {
+        ventPowerFlag = 0;
+        _ventTimer = millis();
+        analogWrite(VentTransistorPin, 0);
+      }
+    }
+
+/*  _fanPower= constrain(DHTTemperature_, SystemLimens.DHTTemperature_Low, SystemLimens.DHTTemperature_Hi);
     fanPower = map(_fanPower, SystemLimens.DHTTemperature_Low, SystemLimens.DHTTemperature_Hi, 25, 255);    
     if (DHTHumidity_ < SystemLimens.DHTHumidity_Low + 3) {
       fanPower = 25;
@@ -526,14 +594,26 @@ void CheckChangeVents()
       fanPower = 255;
     }
     analogWrite(VentTransistorPin,fanPower);
+*/
 }
 
-void CheckTurnOnAirHumidifier()
+void CheckChangeAirHumidifier()
 {
-  if ((DHTHumidity_ < SystemLimens.DHTHumidity_Low + 2) && !airHumidify) {
-    airHumidify = 1;
+  if (DHTHumidity_ < SystemLimens.DHTHumidity_Low) {
     digitalWrite(HumidifierRelayPin, LOW);
   }
+  else {
+    digitalWrite(HumidifierRelayPin, HIGH);
+  }
+/*if ((DHTHumidity_ < SystemLimens.DHTHumidity_Low) && !airHumidify) {
+    airHumidify = 1;
+    airHumidifyTimer = millis();
+    digitalWrite(HumidifierRelayPin, LOW);
+  }
+  else if (airHumidify && ((millis()- airHumidifyTimer) > 150000)) {
+    airHumidify = 0;
+    digitalWrite(HumidifierRelayPin,HIGH);
+  }*/
 }
 
 void CheckChangeWaterPump() 
